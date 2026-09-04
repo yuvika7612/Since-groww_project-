@@ -10,3 +10,9 @@ node_modules/
 dist/
 .DS_Store
 .vscode/
+
+# Working notes for the build, not part of the submission. Kept on disk
+# because the agent reads them; the shipped README is written separately.
+CLAUDE.md
+BUILD_PLAN.md
+SETUP.md
