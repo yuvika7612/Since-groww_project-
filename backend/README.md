@@ -134,6 +134,13 @@ app/
   models.py             schema; shared tables vs personal tables
 ```
 
+## Known issues
+
+yfinance 0.2.44 returns JSONDecodeError against current Yahoo endpoints.
+The provider degrades correctly (returns {}, logs, does not raise).
+The replay provider is the demo path and is unaffected.
+Bumping yfinance is deferred — live data is not required for the submission.
+
 ## Why the replay provider exists
 
 It is not scaffolding. Free Indian market data endpoints are unreliable, NSE

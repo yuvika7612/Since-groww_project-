@@ -37,7 +37,10 @@ _OPEN = time(9, 15)
 _CLOSE = time(15, 30)
 _POST_CLOSE_END = time(16, 0)
 
-_IST = timezone(timedelta(hours=5, minutes=30))
+# Public because the live provider needs it too: Yahoo returns tz-aware
+# timestamps and the rest of this system speaks naive IST. India has no DST,
+# so a fixed offset is exactly correct rather than merely convenient.
+IST = timezone(timedelta(hours=5, minutes=30))
 
 # NSE trading holidays for 2026. Hardcoded rather than fetched, because the
 # exchange publishes this list once a year, so a live lookup would just be one
@@ -106,7 +109,7 @@ def _as_ist_naive(when: datetime) -> datetime:
     of silently being off by 5.5 hours.
     """
     if when.tzinfo is not None:
-        return when.astimezone(_IST).replace(tzinfo=None)
+        return when.astimezone(IST).replace(tzinfo=None)
     return when
 
 
