@@ -2,15 +2,20 @@
 
     uvicorn app.main:app --reload
 
-The poller is not started here. Phase 5 owns it, and the API is deliberately
-able to serve without it: reads come from the cache and the database, so a
-dead worker degrades into stale prices that are *labelled* stale rather than
-into a broken API. /health is how you tell the difference.
+The ingest worker runs in this process, as a daemon thread started in the
+lifespan below. That makes the demo a single command and lets the in-memory
+cache actually be shared; production splits them and puts Redis in between.
+
+The API is still able to serve without the worker: reads come from the cache
+and the database, so a dead poller degrades into stale prices that are
+*labelled* stale rather than into a broken API. /health is how you tell the
+difference, which is why last_poll_at is on it.
 """
 
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -21,10 +26,11 @@ from app import state
 from app.api import auth, debug, digest, symbols, watchlists
 from app.cache import cache
 from app.config import settings
-from app.db import init_db
+from app.db import SessionLocal, init_db
 from app.market.calendar import market_state
 from app.providers.factory import provider
 from app.schemas import HealthOut, ist
+from workers import ingest
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -35,6 +41,21 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+
+    # Production: run as a separate process with Redis shared cache.
+    #
+    # In-process here because it makes the demo one command, and because the
+    # in-memory cache is only genuinely shared when there is one process to
+    # share it in. Daemon, so it dies with the API rather than outliving it.
+    _worker = threading.Thread(target=ingest.run, daemon=True, name="ingest-worker")
+    _worker.start()
+
+    # The hot set lives in memory and the watchlists live in the database, so
+    # a cold start has nothing to poll until someone adds a symbol. The
+    # database is the source of truth; ask it.
+    with SessionLocal() as session:
+        ingest._rebuild_hot_set(session)
+
     log.info(
         "started: provider=%s database=%s", provider.name, settings.database_url
     )

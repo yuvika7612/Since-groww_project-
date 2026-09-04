@@ -58,9 +58,17 @@ def client(monkeypatch):
     import app.api.digest as digest_module
     import app.api.watchlists as watchlists_module
     import app.main as main_module
+    import workers.ingest as ingest_module
 
-    for module in (digest_module, watchlists_module, main_module):
+    for module in (digest_module, watchlists_module, main_module, ingest_module):
         monkeypatch.setattr(module, "cache", fresh)
+
+    # The lifespan starts the real poll loop in a daemon thread. Left alone it
+    # would poll the developer's seeded database on the real clock and write
+    # events into it from a unit test, so it is stubbed out and the startup
+    # helpers are pointed at this throwaway database instead.
+    monkeypatch.setattr(ingest_module, "run", lambda: None)
+    monkeypatch.setattr(main_module, "SessionLocal", factory)
 
     from app.main import app
 
@@ -314,6 +322,9 @@ def test_health_reports_the_poller_not_just_the_api(client):
 
     assert body["status"] == "ok"
     assert body["provider"] == "replay"
-    # None until a poll cycle runs: an API up in front of a dead worker must
-    # be distinguishable from a healthy system.
+    # The poll loop is stubbed out in this fixture, so no cycle has run. An
+    # API answering happily in front of a worker that never polled must be
+    # distinguishable from a healthy system, and this is the field that does
+    # it -- nothing else in the response would look any different.
     assert body["last_poll_at"] is None
+    assert body["last_poll_symbol_count"] == 0

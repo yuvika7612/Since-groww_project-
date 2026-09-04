@@ -23,7 +23,9 @@ class Settings(BaseSettings):
     # "yfinance" hits the live provider.
     market_provider: str = "replay"
     replay_fixture: str = "./data/session.jsonl"
-    replay_speed: float = 60.0  # 1 wall second == 60 market seconds
+    # At 10x speed a 5s poll interval = 50 virtual seconds < 90s stale threshold.
+    # At 60x (old default) polls were 300 virtual seconds apart and every row degraded.
+    replay_speed: float = 10.0
 
     # Poll cadence in seconds, by market state.
     poll_interval_open: int = 5
