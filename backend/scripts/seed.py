@@ -78,17 +78,20 @@ SYMBOLS: dict[str, tuple[str, str, float, float, float, float]] = {
     "ADANIENT":   ("Adani Enterprises", "Conglomerate", 2950.0, 0.022, 1.45, 3_000_000),
 }
 
-# Planted so the split scenario works out of the box, dated to the session the
-# fixture replays rather than to a month ago.
+# Dated well inside the bar series rather than onto the replayed session.
 #
-# The ex-date has to be seeded *here*, before the nightly run at the end of
-# this script, because that is what puts the stored 52-week range into
-# post-split share terms. Planting it afterwards -- from record_fixture, say --
-# leaves the levels five times too high, the replayed price sits far below
-# them, and TCS reports a false "new 52-week low" on the day of its split.
-# Measured, not theorised.
+# An ex-date on the session itself means every scenario carries a corporate
+# action, so the quiet day is never quiet: it correctly but unhelpfully
+# reports the split, and the screen that is supposed to say "nothing
+# meaningful happened" cannot. Sixty days back exercises the nightly
+# back-adjustment (which is where the 52-week-range bug lived) and leaves the
+# replayed session clean.
+#
+# The split *scenario* provisions its own same-day action when it runs; see
+# app/api/debug.py:run_scenario.
 SPLIT_SYMBOL = "TCS"
 SPLIT_RATIO = 5.0
+SPLIT_DAYS_AGO = 60
 
 
 def trading_days(ending: date, count: int) -> list[date]:
@@ -152,7 +155,7 @@ def run() -> None:
     session_day = today if calendar.is_trading_day(today) else calendar.previous_trading_day(today)
     last_bar_day = calendar.previous_trading_day(session_day)
     days = trading_days(last_bar_day, DAYS)
-    split_date = session_day
+    split_date = today - timedelta(days=SPLIT_DAYS_AGO)
 
     index_returns = rng.normal(INDEX_DRIFT, INDEX_VOL, DAYS)
 
@@ -187,10 +190,15 @@ def run() -> None:
             prices = start * np.exp(np.cumsum(returns))
             volumes = np.abs(rng.normal(avg_volume, avg_volume * 0.25, DAYS))
 
-            # No pre-split doctoring of the bars: the ex-date falls after
-            # every bar in the series, so the whole history is quoted in old
-            # shares and adjust_for_corporate_actions restates all of it
-            # forward. That is the case the live path actually has to survive.
+            if symbol == SPLIT_SYMBOL:
+                # Real pre-split prints are quoted in old shares, so the raw
+                # series has to actually contain the 80% drop for the nightly
+                # back-adjustment to have something to remove. Seeding a
+                # smooth series and then adjusting it would *create* a
+                # discontinuity rather than repair one.
+                before = np.array([d < split_date for d in days])
+                prices = np.where(before, prices * SPLIT_RATIO, prices)
+                volumes = np.where(before, volumes / SPLIT_RATIO, volumes)
 
             session.add_all(_bars_for(symbol, prices, volumes, days, rng))
 

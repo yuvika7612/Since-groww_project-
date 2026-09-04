@@ -125,6 +125,7 @@ class ReplayProvider(MarketDataProvider):
                 continue
 
             price = float(frame["price"])
+            open_price = float(frame.get("open", price))
             as_of = when
             drop = False
 
@@ -141,7 +142,18 @@ class ReplayProvider(MarketDataProvider):
                     # only the timestamp reveals the problem.
                     as_of = fault.start
                 elif fault.kind == "split":
-                    price /= fault.magnitude or 5.0
+                    # Every price in the quote is in new shares on an ex-date,
+                    # not just the last trade. Dividing price alone leaves the
+                    # opening print in old shares, and overnight_gap() then
+                    # compares it against a restated previous_close and
+                    # reports a 400% gap.
+                    #
+                    # previous_close is deliberately left in old shares: a
+                    # real feed does not restate it, and handling that is the
+                    # whole point of the exercise.
+                    ratio = fault.magnitude or 5.0
+                    price /= ratio
+                    open_price /= ratio
                 elif fault.kind == "conflict":
                     self._secondary[symbol] = price * (1 + 0.03 * fault.magnitude)
 
@@ -151,7 +163,7 @@ class ReplayProvider(MarketDataProvider):
             out[symbol] = Quote(
                 symbol=symbol,
                 price=round(price, 2),
-                open=float(frame.get("open", price)),
+                open=open_price,
                 previous_close=float(frame.get("previous_close", price)),
                 volume=float(frame.get("volume", 0.0)),
                 as_of=as_of,

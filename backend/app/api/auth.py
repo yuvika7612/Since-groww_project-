@@ -18,7 +18,7 @@ from __future__ import annotations
 import base64
 import binascii
 
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -93,3 +93,33 @@ def get_current_user(
     if user is None or user.email != email:
         raise unauthorised
     return user
+
+
+def get_current_user_allowing_beacon(
+    authorization: str | None = Header(default=None),
+    token: str | None = Query(default=None),
+    session: Session = Depends(get_session),
+) -> User:
+    """get_current_user, plus a query-string token for header-less clients.
+
+    Two browser APIs cannot set request headers at all, and both are load
+    bearing here: navigator.sendBeacon, which carries the page-hide flush of
+    the read watermark (the moment a user closes the app is exactly when
+    "what have I already read" is being recorded), and EventSource, which
+    carries the live stream.
+
+    Deliberately scoped to the single endpoint that needs it rather than
+    widened across the API: a token in a query string ends up in access logs
+    and browser history. That is an acceptable concession for an unsigned
+    dev-login token and would not be for a real one, which is another reason
+    the auth swap is one function.
+    """
+    if authorization:
+        return get_current_user(authorization=authorization, session=session)
+    if token:
+        return get_current_user(authorization=f"Bearer {token}", session=session)
+    raise HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        "Missing or invalid bearer token",
+        headers={"WWW-Authenticate": "Bearer"},
+    )

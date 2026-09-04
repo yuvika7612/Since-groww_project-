@@ -15,10 +15,14 @@ from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.cache import cache
 from app.config import settings
+from app.db import SessionLocal
+from app.models import ChangeEventRow, CorporateAction, UserSymbolSeen
 from app.market.calendar import IST
 from app.providers.factory import provider
 from app.providers.replay import ReplayProvider
+from workers import nightly
 from app.schemas import InjectFaultRequest, ScenarioFault, ScenarioOut, SeekRequest
 
 router = APIRouter(prefix="/debug", tags=["debug"])
@@ -26,6 +30,12 @@ router = APIRouter(prefix="/debug", tags=["debug"])
 # The session the bundled fixture replays. Offset-aware so every timestamp
 # leaving the API carries one, like every other datetime in the schema.
 SESSION_DAY = datetime(2026, 9, 4, tzinfo=IST)
+
+# The split scenario injects a price fault; without a matching ex-date the
+# worker has nothing to explain the 80% drop with and would report the very
+# false crash this project exists to prevent.
+SPLIT_DEMO_SYMBOL = "TCS"
+SPLIT_DEMO_RATIO = 5.0
 
 
 def replay_only() -> ReplayProvider:
@@ -67,7 +77,15 @@ SCENARIOS: list[ScenarioOut] = [
             "lost their money."
         ),
         seek_to=SESSION_DAY.replace(hour=9, minute=20),
-        faults=[ScenarioFault(kind="split", symbol="TCS", magnitude=5.0)],
+        # Duration matters: an instantaneous fault fires for one virtual
+        # minute, after which the quoted price snaps back to old shares while
+        # previous_close stays restated, and the detector reports a 400%
+        # rally. A split does not last a minute, it lasts the session.
+        faults=[
+            ScenarioFault(
+                kind="split", symbol="TCS", magnitude=5.0, duration_minutes=400
+            )
+        ],
     ),
     ScenarioOut(
         key="feed_outage",
@@ -138,3 +156,107 @@ def seek(payload: SeekRequest, replay: ReplayProvider = Depends(replay_only)) ->
         target = target.astimezone(IST).replace(tzinfo=None)
     replay.seek(target)
     return {"now": replay.now().replace(tzinfo=IST).isoformat()}
+
+
+@router.post("/scenarios/{key}")
+def run_scenario(key: str, replay: ReplayProvider = Depends(replay_only)) -> dict:
+    """Seek the clock and inject the faults for one preset, in one call.
+
+    The demo is driven from here, so it has to be a single button press with
+    nothing to remember under pressure.
+
+    Previously scheduled faults are cleared first. Without that, running the
+    split scenario and then the quiet day leaves the split still firing, and
+    the "quiet day" that is supposed to show silence shows a corporate action
+    instead -- which is the one moment in the demo where a stale fault is most
+    obvious and least recoverable.
+    """
+    scenario = next((s for s in SCENARIOS if s.key == key), None)
+    if scenario is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Unknown scenario {key}. Try: {', '.join(s.key for s in SCENARIOS)}",
+        )
+
+    replay._faults.clear()
+    replay._secondary.clear()
+    # The clock is about to move, which makes every cached price a
+    # description of a different moment. See Cache.clear_quotes.
+    cache.clear_quotes()
+
+    # Events already detected for this session are discarded, because a
+    # scenario seeks the clock *backwards* as often as forwards and a detected
+    # event does not un-happen when time rewinds. Without this, running the
+    # selloff and then the quiet day shows the quiet day still carrying five
+    # alerts from a future that has not happened yet -- and the quiet day is
+    # the scenario whose entire point is that the screen says nothing.
+    #
+    # Safe only because this is replay-only and the fixture is deterministic:
+    # the poller re-detects everything true at the new clock position within
+    # one cycle.
+    # Read watermarks go with them, for the same reason. A scenario seeks the
+    # clock backwards as readily as forwards, and a watermark stamped 14:26 by
+    # the previous run silently marks every event re-detected at 14:05 as
+    # already read -- so the second run of the demo shows an empty screen and
+    # looks broken at exactly the wrong moment.
+    #
+    # This is a reset, not a correction: the watermark logic itself is right,
+    # and outside replay a clock never runs backwards.
+    with SessionLocal() as session:
+        removed = session.query(ChangeEventRow).delete()
+        session.query(UserSymbolSeen).delete()
+
+        # The corporate action is provisioned per scenario rather than seeded
+        # onto the replayed session, because an ex-date on that session makes
+        # every scenario carry a split -- and the quiet day, whose entire
+        # point is that the screen says nothing, would correctly but
+        # uselessly report one.
+        #
+        # seed.py dates the real split 60 days back, where it exercises the
+        # nightly back-adjustment. This adds a same-day one only while the
+        # split scenario is the one being shown.
+        session.query(CorporateAction).filter(
+            CorporateAction.symbol == SPLIT_DEMO_SYMBOL,
+            CorporateAction.ex_date == SESSION_DAY.date(),
+        ).delete()
+        if scenario.key == "split":
+            session.add(
+                CorporateAction(
+                    symbol=SPLIT_DEMO_SYMBOL,
+                    ex_date=SESSION_DAY.date(),
+                    action_type="split",
+                    ratio=SPLIT_DEMO_RATIO,
+                    amount=0.0,
+                )
+            )
+        session.commit()
+
+    # Statistics are recomputed because the corporate action just changed, and
+    # this is the remedy workers/ingest.py:_apply_corporate_action documents
+    # for exactly this situation: an action ingested after the last nightly
+    # run leaves high_52w and low_52w in old shares. Skip it and the split
+    # scenario prices TCS at 758 against a 52-week low of 3780 and reports a
+    # new 52-week low -- the precise false alarm the product exists to
+    # prevent, produced by the demo that is supposed to disprove it.
+    nightly.run()
+
+    target = scenario.seek_to
+    if target.tzinfo is not None:
+        target = target.astimezone(IST).replace(tzinfo=None)
+    replay.seek(target)
+
+    for fault in scenario.faults:
+        replay.inject_now(
+            kind=fault.kind,
+            symbol=fault.symbol,
+            magnitude=fault.magnitude,
+            duration_minutes=fault.duration_minutes,
+        )
+
+    return {
+        "scenario": scenario.key,
+        "title": scenario.title,
+        "now": replay.now().replace(tzinfo=IST).isoformat(),
+        "faults_injected": len(scenario.faults),
+        "events_cleared": removed,
+    }

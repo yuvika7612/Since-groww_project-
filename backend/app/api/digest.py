@@ -23,7 +23,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user
+from app.api.auth import get_current_user, get_current_user_allowing_beacon
 from app.cache import cache
 from app.db import get_session
 from app.digest.assembler import assemble_digest
@@ -141,7 +141,7 @@ def get_digest(
 @router.post("/seen", response_model=SeenResponse)
 def post_seen(
     payload: SeenRequest,
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_allowing_beacon),
     session: Session = Depends(get_session),
 ) -> SeenResponse:
     """Advance watermarks for symbols this user actually watches.
@@ -275,7 +275,7 @@ async def _stream(request: Request, symbols: list[str], backlog: list[dict]):
 async def stream(
     request: Request,
     symbols: str = Query(default=""),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user_allowing_beacon),
     session: Session = Depends(get_session),
 ) -> StreamingResponse:
     requested = [s.strip().upper() for s in symbols.split(",") if s.strip()]

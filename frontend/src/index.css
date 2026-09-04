@@ -1,0 +1,105 @@
+/* Since — design tokens and base type.
+ *
+ * The colour rule that matters: direction is carried by TEXT COLOUR and a
+ * GLYPH, never by a fill, background, tint or badge. The backend spends its
+ * effort ranking rows by significance relative to each symbol's own
+ * behaviour; an interface that shouts in proportion to the raw percentage
+ * throws that work away and re-sorts the page by loudness. It also happens
+ * to survive colour blindness and direct sunlight.
+ */
+
+@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;1,6..72,400&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+:root {
+  --paper:   #FFFFFF;
+  --ink:     #16191D;
+  --muted:   #5C6470;
+  --rule:    #E4E6EA;
+  --unseen:  #2B5CE6;
+  --caution: #8A6A1F;
+  --up:      #1A7F5A;
+  --down:    #B4342A;
+
+  --serif: 'Newsreader', Georgia, 'Times New Roman', serif;
+  --sans:  'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+
+  --measure: 68ch;
+  --gap: 1rem;
+
+  color-scheme: light;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--sans);
+}
+
+/* Every price and percentage. Proportional digits make a price column
+ * visibly ragged the moment two rows sit above each other. */
+.tabular { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; }
+
+.serif { font-family: var(--serif); }
+
+/* Visible focus, always. Keyboard users are not a special case. */
+:focus-visible {
+  outline: 2px solid var(--unseen);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+}
+
+a { color: var(--unseen); }
+
+input {
+  font: inherit;
+  color: var(--ink);
+  background: var(--paper);
+  border: 1px solid var(--rule);
+  border-radius: 3px;
+  padding: 0.5rem 0.625rem;
+}
+input::placeholder { color: var(--muted); }
+
+hr.rule {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 1.25rem 0;
+}
+
+.shell {
+  max-width: var(--measure);
+  margin: 0 auto;
+  padding: 2rem 1.25rem 6rem;
+}
+
+@media (max-width: 400px) {
+  .shell { padding: 1.25rem 1rem 5rem; }
+}
+
+.muted { color: var(--muted); }
+.small { font-size: 0.8125rem; }
+
+.up   { color: var(--up); }
+.down { color: var(--down); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+}

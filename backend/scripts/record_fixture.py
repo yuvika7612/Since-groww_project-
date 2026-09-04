@@ -17,9 +17,9 @@ Scenarios in the session, in order:
     11:30-11:45  market-wide selloff, index -2.2%, every symbol falling by
                  its own beta -- except IRFC, which holds flat
     11:45-14:00  the new level holds
-    all session  TCS trades ex a 1:5 split: quoted 80% below a
-                 previous_close the feed has not restated, with a corporate
-                 action for today planted so the worker can explain it
+The replayed session carries no corporate action, so the quiet day is
+genuinely quiet. The split scenario provisions its own same-day action when
+it is run; see app/api/debug.py.
 """
 
 from __future__ import annotations
@@ -120,23 +120,6 @@ def synthesise(out_path: Path) -> int:
         if not universe:
             raise SystemExit("no bars found - run scripts/seed.py first")
 
-        # Deliberately read, never written. The action has to exist before
-        # the nightly run that seed.py performs, or the stored 52-week range
-        # stays in old shares and the split reports as a new 52-week low.
-        # Planting it from here would be too late by construction.
-        action = (
-            session.query(CorporateAction)
-            .filter(
-                CorporateAction.symbol == SPLIT_SYMBOL,
-                CorporateAction.ex_date == day,
-                CorporateAction.action_type == "split",
-            )
-            .one_or_none()
-        )
-        if action is None:
-            raise SystemExit(
-                f"no {SPLIT_SYMBOL} split dated {day} - run scripts/seed.py first"
-            )
 
     stamps: list[datetime] = []
     cursor = datetime.combine(day, OPEN)
@@ -150,10 +133,6 @@ def synthesise(out_path: Path) -> int:
         symbol: round(info["previous_close"] * (1 + float(rng.normal(0, 0.0008))), 2)
         for symbol, info in universe.items()
     }
-    # The opening print on an ex-date is in new shares like every other print
-    # that session. Leaving it in old shares makes overnight_gap() compare a
-    # pre-split open against a restated previous_close and report a 399% gap.
-    opens[SPLIT_SYMBOL] = round(opens[SPLIT_SYMBOL] / SPLIT_RATIO, 2)
 
     written = 0
     with out_path.open("w", encoding="utf-8") as handle:
@@ -175,22 +154,6 @@ def synthesise(out_path: Path) -> int:
                     move = info["beta"] * index_return + float(rng.normal(0, 0.0006))
 
                 price = info["previous_close"] * (1 + move)
-                if symbol == SPLIT_SYMBOL:
-                    # Quoted in new shares from the opening bell, because that
-                    # is when an ex-date takes effect. The feed does not adjust
-                    # previous_close to match, which is exactly the situation
-                    # the worker has to survive: an 80% apparent overnight drop
-                    # that means nothing.
-                    #
-                    # Deliberately NOT dropped mid-session. A 5x fall between
-                    # two consecutive ticks is not a split, it is a bad print,
-                    # and validate_tick correctly quarantines it -- so the
-                    # post-split price never reaches the cache while
-                    # previous_close has already been restated, and the
-                    # detector reports a 400% rally and a false 52-week high.
-                    # Measured, not theorised.
-                    price /= SPLIT_RATIO
-
                 handle.write(
                     json.dumps(
                         {

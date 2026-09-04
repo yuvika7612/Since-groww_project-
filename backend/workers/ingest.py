@@ -32,6 +32,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app import state
 from app.cache import cache
+from app.config import settings
 from app.db import SessionLocal
 from app.detect.detector import TickContext, dedupe, detect
 from app.detect.events import ChangeEvent, EventType
@@ -326,7 +327,7 @@ def _process_symbol(
         open_price=accepted.open,
         volume_so_far=accepted.volume,
         session_fraction=calendar.session_fraction(now),
-        index_return=_index_return(),
+        index_return=_index_return(now),
         observed_at=now,
         session_date=session_date,
     )
@@ -335,10 +336,33 @@ def _process_symbol(
     return _persist(session, symbol, dedupe(events, session_keys), counts)
 
 
-def _index_return() -> float:
-    """Today's return of the reference index, from the cached quote."""
+def _index_return(now: datetime) -> float:
+    """Today's index return, or zero if we cannot vouch for it being current.
+
+    The residual -- r_stock minus beta times r_index -- is the product's
+    headline signal, and it is only meaningful when both halves describe the
+    same moment. An index quote from an hour ago paired with a current stock
+    price does not measure how the stock moved against the market; it measures
+    how far the clock has drifted, and it does it for every symbol at once.
+
+    That is not hypothetical. Jumping the replay clock to a scenario leaves
+    the cached index hours behind for one cycle, and every single stock then
+    reports a spurious idiosyncratic move -- the one signal that is supposed
+    to mean "this moved differently from everything else".
+
+    Returning 0.0 when the reference is stale collapses the residual back to
+    the raw move, which is honest: without a trustworthy market return there
+    is nothing to subtract.
+    """
     quote = cache.get_quote(INDEX_SYMBOL)
     if quote is None or quote.previous_close <= 0:
+        return 0.0
+    age = abs((now - quote.as_of).total_seconds())
+    if age > settings.stale_after_seconds:
+        log.warning(
+            "index quote is %.0fs old; scoring without a market reference this cycle",
+            age,
+        )
         return 0.0
     return (quote.price - quote.previous_close) / quote.previous_close
 
@@ -368,8 +392,11 @@ def _cycle() -> None:
     # The index is polled whether or not anyone watches it: without it there
     # is no market return to subtract, and every residual collapses to the
     # raw move.
-    if INDEX_SYMBOL not in symbols:
-        symbols = symbols + [INDEX_SYMBOL]
+    # Index first, and it is not optional ordering. sorted() puts "^NSEI"
+    # after every letter, so left alone the benchmark is priced last and every
+    # symbol in the cycle measures its residual against the previous cycle's
+    # market.
+    symbols = [INDEX_SYMBOL] + [s for s in symbols if s != INDEX_SYMBOL]
 
     started = time.monotonic()
     session_date = _session_date(now)

@@ -54,6 +54,8 @@ class Cache(Protocol):
 
     def hot_set(self) -> list[str]: ...
 
+    def clear_quotes(self) -> None: ...
+
     def publish(self, symbol: str, payload: dict) -> None: ...
 
     def subscribe(self, symbols: list[str]) -> Iterator[dict]: ...
@@ -166,6 +168,11 @@ class RedisCache:
     def hot_set(self) -> list[str]:
         return list(self._redis.zrange(HOT_SET_KEY, 0, -1))
 
+    def clear_quotes(self) -> None:
+        keys = list(self._redis.scan_iter(match=f"{_QUOTE_PREFIX}*"))
+        if keys:
+            self._redis.delete(*keys)
+
     def publish(self, symbol: str, payload: dict) -> None:
         self._redis.publish(self._channel(symbol), json.dumps(payload))
 
@@ -250,6 +257,19 @@ class InMemoryCache:
         # contract; Redis returns ZRANGE order, which is by refcount then lex.
         with self._lock:
             return sorted(self._hot)
+
+    def clear_quotes(self) -> None:
+        """Forget every cached price. Used when the clock moves.
+
+        A quote is only meaningful next to the moment it describes. Seeking
+        the replay clock leaves every cached quote describing a different
+        time, and validate_tick then measures the next real tick against a
+        baseline from hours away -- quarantining a perfectly good price as an
+        implausible move. Dropping them makes the next tick the first one,
+        which is exactly what it is.
+        """
+        with self._lock:
+            self._quotes.clear()
 
     def publish(self, symbol: str, payload: dict) -> None:
         with self._lock:
