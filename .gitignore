@@ -5,6 +5,9 @@ __pycache__/
 venv/
 .env
 backend/data/*.db
+# WAL sidecars, created since db.py enables journal_mode=WAL
+backend/data/*.db-shm
+backend/data/*.db-wal
 backend/data/*.jsonl
 node_modules/
 dist/

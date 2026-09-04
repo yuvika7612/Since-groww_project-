@@ -31,6 +31,25 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+from app.market.calendar import IST
+
+
+def _now_ist() -> datetime:
+    """Wall clock in IST, naive, like every other datetime in the system.
+
+    These columns previously defaulted to datetime.utcnow, which stored UTC
+    into a schema whose every other timestamp -- quotes, watermarks, event
+    times -- is naive IST. Anything serialising them then had to either label
+    UTC as IST (wrong by five and a half hours) or carry two conflicting
+    meanings for the same type.
+
+    This is the one place that reads the wall clock rather than the
+    provider's now(). Column defaults have no route to the provider, and
+    these are bookkeeping timestamps -- when a row was written -- not market
+    observations, so they do not belong on the replay clock.
+    """
+    return datetime.now(IST).replace(tzinfo=None)
+
 
 class Base(DeclarativeBase):
     pass
@@ -94,7 +113,7 @@ class SymbolStats(Base):
     # Number of observations the above are based on. A beta computed from 8
     # days is not trustworthy and the detector should know that.
     sample_size: Mapped[int] = mapped_column(Integer, default=0)
-    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=_now_ist)
 
 
 class CorporateAction(Base):
@@ -154,7 +173,7 @@ class User(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(255), unique=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now_ist)
 
     watchlists: Mapped[list["Watchlist"]] = relationship(back_populates="user")
 
@@ -165,7 +184,7 @@ class Watchlist(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(64), default="My watchlist")
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now_ist)
 
     user: Mapped["User"] = relationship(back_populates="watchlists")
     items: Mapped[list["WatchlistItem"]] = relationship(
@@ -179,7 +198,7 @@ class WatchlistItem(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     watchlist_id: Mapped[int] = mapped_column(Integer, ForeignKey("watchlists.id"), index=True)
     symbol: Mapped[str] = mapped_column(String(32), ForeignKey("symbols.symbol"))
-    added_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    added_at: Mapped[datetime] = mapped_column(DateTime, default=_now_ist)
     # Price when the symbol was added. Lets the UI answer "how has this done
     # since I started caring about it", which is a different and often more
     # useful question than "how has this done today".
