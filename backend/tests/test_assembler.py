@@ -18,7 +18,7 @@ from app.cache import InMemoryCache
 from app.detect.events import EventType
 from app.digest.assembler import assemble_digest
 from app.digest.seen import SeenEntry, mark_seen
-from app.models import ChangeEventRow, Watchlist
+from app.models import ChangeEventRow, SymbolStats, Watchlist
 from app.providers.base import Freshness, Quote
 from tests.conftest import make_symbols, make_user, make_watchlist
 
@@ -213,6 +213,64 @@ def test_crossing_cost_basis_is_computed_per_user_not_stored_shared(session):
     assert EventType.CROSSED_COST_BASIS in types
     # It is personal, so it must not have been written to the shared table.
     assert session.query(ChangeEventRow).count() == 0
+
+
+def test_cost_basis_severity_is_scored_against_the_symbols_own_volatility(session):
+    """The same 2% crossing is decisive for one symbol and noise for another.
+
+    A raw percentage would rank these identically, which is the mistake this
+    whole product is arguing against. The calm symbol's crossing is four sigma
+    of its normal day; the volatile one's is a third of a sigma.
+    """
+    user = make_user(session)
+    make_symbols(session, "CALM", "WILD")
+    make_watchlist(session, user, ["CALM", "WILD"], cost_basis={"CALM": 100.0, "WILD": 100.0})
+    session.add(SymbolStats(symbol="CALM", std_ret_30d=0.005, avg_vol_20d=1e6))
+    session.add(SymbolStats(symbol="WILD", std_ret_30d=0.060, avg_vol_20d=1e6))
+    session.flush()
+
+    mark_seen(
+        session,
+        user.id,
+        [SeenEntry("CALM", NOW - timedelta(hours=1), 98.0),
+         SeenEntry("WILD", NOW - timedelta(hours=1), 98.0)],
+        NOW,
+    )
+    cache = InMemoryCache()
+    for symbol in ("CALM", "WILD"):
+        cache.set_quote(symbol, quote(symbol, 102.0, 98.0))
+
+    digest = assemble_digest(session, cache, user.id, None, NOW)
+
+    def basis_event(symbol):
+        return next(
+            e for e in row_for(digest, symbol).events
+            if e.type is EventType.CROSSED_COST_BASIS
+        )
+
+    assert basis_event("CALM").severity > basis_event("WILD").severity
+    assert basis_event("CALM").payload["sigma"] > basis_event("WILD").payload["sigma"]
+
+
+def test_cost_basis_crossing_is_still_reported_without_statistics(session):
+    """A newly listed symbol has no sigma, but the crossing still happened.
+
+    It gets the base severity and no magnitude claim, rather than being
+    silently dropped or given a fabricated rank.
+    """
+    user = build(session, ["TCS"], cost_basis={"TCS": 3980.0})
+    mark_seen(session, user.id, [SeenEntry("TCS", NOW - timedelta(hours=1), 3950.0)], NOW)
+    cache = InMemoryCache()
+    cache.set_quote("TCS", quote("TCS", 4000.0, 3900.0))
+
+    digest = assemble_digest(session, cache, user.id, None, NOW)
+
+    crossing = next(
+        e for e in row_for(digest, "TCS").events
+        if e.type is EventType.CROSSED_COST_BASIS
+    )
+    assert crossing.severity == 0.5
+    assert "sigma" not in crossing.payload
 
 
 def test_cost_basis_does_not_refire_while_the_position_stays_above(session):

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 from app.cache import Cache
 from app.config import settings
 from app.detect.events import ChangeEvent, EventType
-from app.detect.signals import saturate
+from app.detect.signals import MIN_SIGMA, saturate
 from app.digest.service import (
     Digest,
     DigestRow,
@@ -32,7 +32,14 @@ from app.digest.service import (
     compute_market_context,
 )
 from app.market.calendar import is_trading_day, previous_trading_day
-from app.models import ChangeEventRow, Symbol, UserSymbolSeen, Watchlist, WatchlistItem
+from app.models import (
+    ChangeEventRow,
+    Symbol,
+    SymbolStats,
+    UserSymbolSeen,
+    Watchlist,
+    WatchlistItem,
+)
 from app.providers.base import Freshness, Quote
 
 DEFAULT_BENCHMARK = "^NSEI"
@@ -76,6 +83,7 @@ def _cost_basis_event(
     price: float,
     reference: float | None,
     cost_basis: float,
+    stats: SymbolStats | None,
     now: datetime,
     session_date,
 ) -> ChangeEvent | None:
@@ -89,6 +97,11 @@ def _cost_basis_event(
     Kept out of change_events because that table is shared by every user, and
     putting a per-user fact in it would collapse the boundary the whole
     architecture rests on.
+
+    Magnitude is scored in units of the symbol's own daily volatility, like
+    every other signal in the system. A raw percentage would be wrong in both
+    directions: 2% past cost basis is decisive for a stock that moves 0.5% on
+    a normal day and inside the noise for one that routinely swings 6%.
     """
     if reference is None or cost_basis <= 0:
         return None
@@ -100,17 +113,34 @@ def _cost_basis_event(
 
     distance = abs(price - cost_basis) / cost_basis
     direction = "above" if crossed_up else "below"
+    payload = {"cost_basis": cost_basis, "price": round(price, 4)}
+    detail = ""
+
+    if stats is not None and stats.std_ret_30d > MIN_SIGMA:
+        # cap=3.0 sigma to match the abnormal-move scoring in detector.py:
+        # past three sigma, one crossing is not meaningfully more urgent
+        # than another.
+        sigma_distance = distance / stats.std_ret_30d
+        severity = 0.5 + 0.5 * saturate(sigma_distance, cap=3.0)
+        payload["sigma"] = round(sigma_distance, 3)
+        detail = f", {sigma_distance:.1f} sigma past it"
+    else:
+        # Suspended, newly listed, or stats not computed yet. The crossing is
+        # still a fact worth reporting; its magnitude is not something we can
+        # honestly rank, so it gets the base severity and no bonus.
+        severity = 0.5
+
     return ChangeEvent(
         symbol=symbol,
         type=EventType.CROSSED_COST_BASIS,
-        severity=round(0.5 + 0.5 * saturate(distance, cap=0.05), 4),
+        severity=round(severity, 4),
         occurred_at=now,
         session_date=session_date,
         explanation=(
             f"Crossed {direction} your cost basis of {cost_basis:.2f}, "
-            f"now {price:.2f}"
+            f"now {price:.2f}{detail}"
         ),
-        payload={"cost_basis": cost_basis, "price": round(price, 4)},
+        payload=payload,
     )
 
 
@@ -171,7 +201,18 @@ def assemble_digest(
         )
     }
 
-    # --- 4. events, one query ----------------------------------------------
+    # --- 4. trailing statistics, one query ---------------------------------
+    # Scores the cost-basis crossing below in units of each symbol's own
+    # volatility, and is what Phase 4's symbol detail endpoint reads to show
+    # an expected move range.
+    stats_by_symbol: dict[str, SymbolStats] = {
+        row.symbol: row
+        for row in session.scalars(
+            select(SymbolStats).where(SymbolStats.symbol.in_(symbols))
+        )
+    }
+
+    # --- 5. events, one query ----------------------------------------------
     session_date = _session_day(now)
     session_start = datetime.combine(session_date, time.min)
     # Bounded by the oldest thing any row could need: the earliest watermark,
@@ -203,7 +244,7 @@ def assemble_digest(
             continue
         events_by_symbol[row.symbol].append(_to_event(row))
 
-    # --- 5. the market's own move ------------------------------------------
+    # --- 6. the market's own move ------------------------------------------
     index_quote = quotes.get(index_symbol)
     index_return = (
         _fractional_change(index_quote.price, index_quote.previous_close)
@@ -211,7 +252,7 @@ def assemble_digest(
         else None
     )
 
-    # --- 6. rows ------------------------------------------------------------
+    # --- 7. rows ------------------------------------------------------------
     rows: list[DigestRow] = []
     for item in items:
         watermark = watermarks.get(item.symbol)
@@ -258,6 +299,7 @@ def assemble_digest(
                 quote.price,
                 reference,
                 item.cost_basis,
+                stats_by_symbol.get(item.symbol),
                 now,
                 session_date,
             )
@@ -277,7 +319,7 @@ def assemble_digest(
             )
         )
 
-    # --- 7. rank -----------------------------------------------------------
+    # --- 8. rank -----------------------------------------------------------
     market: MarketContext | None = None
     if index_return is not None:
         market = compute_market_context(index_symbol, index_return, rows)
