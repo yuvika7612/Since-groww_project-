@@ -1,20 +1,50 @@
 # Smart Market Watchlist
 
-Most watchlists show you the market. This one shows you what changed **for
-you** — filtered against each stock's own volatility and its sector's move,
-ranked into a fixed attention budget, and silent when nothing happened.
+Most watchlists show you the market. Since shows what changed for you.
 
-## Run it
+A per-user read watermark measures change against the price you last actually
+saw — not yesterday's close. Every move is scored against that stock's own
+volatility, so a 4% day counts for a large-cap bank and not for a smallcap
+that swings 6% routinely. Moves the index already explains collapse into one
+headline, surfacing only what moved differently — including the stock that
+stayed flat while the market fell. Corporate actions are adjusted before any
+return is computed, stale feeds never render as live, and silence is a
+supported answer.
+
+## Quick start
 
 ```bash
 cd backend
+python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-PYTHONPATH=. python3 -m pytest tests/ -q   # 29 tests
-PYTHONPATH=. python3 demo.py               # four scenarios, no market needed
+python scripts/seed.py
+python scripts/record_fixture.py
+uvicorn app.main:app --reload
+# In another terminal:
+cd frontend && npm install && npm run dev
+# Open http://localhost:5173
+# Use demo@since.app as the login email
 ```
 
-No Postgres or Redis required for a local run: the app defaults to SQLite and
-an in-process cache. `docker-compose up` swaps in the real services.
+Full stack with Docker:
+
+```bash
+docker-compose up
+# Open http://localhost:5173
+```
+
+Tests and the offline scenario runner:
+
+```bash
+cd backend
+PYTHONPATH=. pytest -q     # 105 tests
+PYTHONPATH=. python demo.py   # four scenarios, no market and no browser needed
+```
+
+No Postgres or Redis is required for a local run: the app defaults to SQLite
+and an in-process cache, and the ingest worker runs as a daemon thread inside
+the API process so one command starts everything. `docker-compose up` swaps in
+the real services and runs the worker the way production would.
 
 ## The problem, restated
 
@@ -122,17 +152,79 @@ the system is attention.
 ## Layout
 
 ```
-app/
+backend/app/
   detect/signals.py     pure math: z-score, RVOL, beta residual, gap
   detect/events.py      typed events, each carrying its own explanation
   detect/detector.py    tick + stats → events; runs once per symbol
   digest/service.py     watermark join, correlated collapse, attention budget
+  digest/assembler.py   the storage-facing half; query count flat at 5
+  digest/seen.py        the read watermark, monotonic in one upsert
+  market/calendar.py    NSE sessions, holidays, intraday volume profile
+  api/                  auth, watchlists, symbols, digest + SSE, demo controls
   statistics/compute.py nightly stats, split adjustment, beta
   market/validate.py    bad-tick quarantine, source reconciliation
   providers/base.py     provider interface, Quote with explicit freshness
   providers/replay.py   virtual clock + fault injection
   models.py             schema; shared tables vs personal tables
+
+backend/workers/
+  ingest.py             the poll loop; runs once per symbol, never per user
+  nightly.py            statistics recompute, idempotent
+
+backend/scripts/
+  seed.py               deterministic offline data, beta-correlated returns
+  record_fixture.py     writes data/session.jsonl for the replay provider
+
+frontend/src/
+  hooks/useSeenTracking.ts   IntersectionObserver dwell -> batched POST /seen
+  hooks/useMarketStream.ts   SSE with backoff; refetch on reconnect
+  components/DigestHeader.tsx  the verdict sentence, the hero of the page
 ```
+
+## Demo (5 minutes)
+
+Open http://localhost:5173, log in as demo@since.app.
+Use the ScenarioPanel (bottom-right) to run each scenario in order.
+
+1. Quiet day
+   Click "Quiet day". The hero reads "Nothing meaningful happened."
+   Point out: IRFC moved more than any other symbol in percentage terms.
+   It is correctly silent because that is a routine day for a 6%-vol stock.
+
+2. Market selloff
+   Click "Market selloff". Two rows surface: TCS (split) and IRFC.
+   Point out: four other stocks fell ~2% and are collapsed into the headline.
+   The index explained their move. IRFC stayed flat when its beta of 1.38
+   predicted a 3% fall - that is the only row carrying new information.
+
+3. Split
+   Click "Split". One row: "Split effective today (ratio 5).
+   Price adjusted, holding unchanged."
+   Point out: without adjustment this would read "-80%, most urgent event
+   on the list." One false alert like that ends the product's credibility.
+
+4. Feed failures (30 seconds total)
+   Click "Feed outage" - INFY moves to degraded, separated from market rows.
+   Click "Frozen feed" - HDFCBANK price goes muted with "as of HH:MM".
+   Click "Bad tick" - RELIANCE quarantined, log shows sigma band rejection.
+   Point out: a frozen feed is more dangerous than an outage because the
+   payload looks healthy. Only the timestamp reveals it.
+
+## What another week would add
+
+- Per-symbol intraday volume profiles instead of the static NSE approximation.
+  The current session_fraction is a fixed lookup table; a real version learns
+  each symbol's own U-shape from historical intraday bars.
+- Sector-relative residuals in addition to index-relative. A banking stock
+  falling 2% when the Bank Nifty fell 2% is also explained away.
+- Real auth - the dev-login is one FastAPI dependency; swapping it touches
+  one function.
+- Push notifications when a high-severity event fires while the app is
+  backgrounded, using the Web Push API and the existing SSE event stream
+  as the trigger.
+- The yfinance provider against current Yahoo endpoints - the pin is stale
+  and returns JSONDecodeError. The provider degrades correctly but live data
+  requires a working endpoint or a paid alternative.
 
 ## Known issues
 

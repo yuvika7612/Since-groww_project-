@@ -11,7 +11,7 @@ cannot exist in a deployment pointed at real data.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
@@ -21,7 +21,7 @@ from app.db import SessionLocal
 from app.models import ChangeEventRow, CorporateAction, UserSymbolSeen
 from app.market.calendar import IST
 from app.providers.factory import provider
-from app.providers.replay import ReplayProvider
+from app.providers.replay import Fault, ReplayProvider
 from workers import nightly
 from app.schemas import InjectFaultRequest, ScenarioFault, ScenarioOut, SeekRequest
 
@@ -36,6 +36,20 @@ SESSION_DAY = datetime(2026, 9, 4, tzinfo=IST)
 # false crash this project exists to prevent.
 SPLIT_DEMO_SYMBOL = "TCS"
 SPLIT_DEMO_RATIO = 5.0
+
+# Virtual time between the seek and a fault that *disrupts* an otherwise
+# working feed, so the poller gets one clean tick to establish a sanity
+# baseline first. Without it, seeking clears the quote cache, the broken tick
+# arrives with nothing to be compared against, validate_tick accepts it
+# unconditionally, and the bad-print demo shows a 40% jump being ranked
+# instead of quarantined.
+FAULT_LEAD_IN = timedelta(seconds=30)
+
+# A split is not a disruption, it is a property of the session: on an ex-date
+# the price is quoted in new shares from the opening bell. Delaying it would
+# leave one cycle where previous_close has been restated but the price has
+# not, which reads as a 400% rally.
+IMMEDIATE_FAULTS = {"split"}
 
 
 def replay_only() -> ReplayProvider:
@@ -245,12 +259,29 @@ def run_scenario(key: str, replay: ReplayProvider = Depends(replay_only)) -> dic
         target = target.astimezone(IST).replace(tzinfo=None)
     replay.seek(target)
 
+    # Faults start a little after the seek, not at it. Seeking clears the
+    # quote cache, so the first tick afterwards has no last_accepted to be
+    # measured against and validate_tick accepts it unconditionally -- which
+    # is right on a genuine cold start and wrong here, because it lets the
+    # bad-print fault through as the baseline and the demo shows a 40% jump
+    # being ranked rather than quarantined. One clean cycle first gives the
+    # sanity band something to work from.
+    now = replay.now()
     for fault in scenario.faults:
-        replay.inject_now(
-            kind=fault.kind,
-            symbol=fault.symbol,
-            magnitude=fault.magnitude,
-            duration_minutes=fault.duration_minutes,
+        start = now if fault.kind in IMMEDIATE_FAULTS else now + FAULT_LEAD_IN
+        end = (
+            start + timedelta(minutes=fault.duration_minutes)
+            if fault.duration_minutes
+            else None
+        )
+        replay.schedule(
+            Fault(
+                kind=fault.kind,
+                symbol=fault.symbol,
+                start=start,
+                end=end,
+                magnitude=fault.magnitude,
+            )
         )
 
     return {

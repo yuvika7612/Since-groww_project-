@@ -1,0 +1,7 @@
+# node_modules must not be copied: npm ci installs them inside the image, and
+# a host copy would both bloat the context and carry platform-specific
+# binaries into an alpine build.
+node_modules/
+dist/
+.env
+*.log

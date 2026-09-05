@@ -1,0 +1,12 @@
+# Keeps the build context small and stops host-built artefacts leaking into
+# the image. .venv in particular holds Windows binaries that would shadow the
+# Linux wheels installed from requirements.txt.
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+data/*.db
+data/*.db-shm
+data/*.db-wal
+data/*.jsonl
+.env

@@ -1,6 +1,9 @@
 fastapi==0.115.0
 uvicorn[standard]==0.32.0
 sqlalchemy==2.0.35
+# Postgres driver. Only needed when DATABASE_URL points at Postgres, which
+# docker-compose does; the default SQLite path never imports it.
+psycopg2-binary==2.9.9
 pydantic==2.9.0
 pydantic-settings==2.5.0
 pandas>=2.2
