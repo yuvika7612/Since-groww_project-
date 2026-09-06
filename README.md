@@ -16,6 +16,8 @@ Containerised stack: Postgres + Redis via Docker Compose
 
 ## Quick start
 
+All paths below are from the repository root.
+
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate
@@ -23,8 +25,13 @@ pip install -r requirements.txt
 python scripts/seed.py
 python scripts/record_fixture.py
 uvicorn app.main:app --reload
-# In another terminal:
-cd frontend && npm install && npm run dev
+```
+
+```bash
+# In another terminal, from the repository root:
+cd frontend
+npm install
+npm run dev
 # Open http://localhost:5173
 # Use demo@since.app as the login email
 ```
@@ -40,7 +47,7 @@ Tests and the offline scenario runner:
 
 ```bash
 cd backend
-PYTHONPATH=. pytest -q     # 105 tests
+PYTHONPATH=. pytest -q        # 105 tests
 PYTHONPATH=. python demo.py   # four scenarios, no market and no browser needed
 ```
 
@@ -186,6 +193,9 @@ frontend/src/
 
 ## Demo (5 minutes)
 
+![The quiet day, which is the output most watchlists cannot produce](docs/screenshot-quiet-day.png)
+
+
 Open http://localhost:5173, log in as demo@since.app.
 Use the ScenarioPanel (bottom-right) to run each scenario in order.
 
@@ -242,5 +252,5 @@ It is not scaffolding. Free Indian market data endpoints are unreliable, NSE
 trades 09:15–15:30 IST so any demo outside that window has no live data at all,
 and — most importantly — the interesting behaviour of this system is what it
 does when things go wrong. You cannot ask a live market to produce a split, a
-frozen feed and a bad print on cue. `demo.py` does exactly that, on demand, in
+frozen feed and a bad print on cue. `backend/demo.py` does exactly that, on demand, in
 about ninety seconds.
