@@ -19,3 +19,7 @@ dist/
 CLAUDE.md
 BUILD_PLAN.md
 SETUP.md
+
+# Build artefact produced by `git archive`; regenerating it must never
+# package the previous copy of itself.
+since-submission.zip
