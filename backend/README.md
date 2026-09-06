@@ -11,6 +11,9 @@ stayed flat while the market fell. Corporate actions are adjusted before any
 return is computed, stale feeds never render as live, and silence is a
 supported answer.
 
+Stack: FastAPI (Python) + React (TypeScript) + Vite + SQLite  
+Containerised stack: Postgres + Redis via Docker Compose
+
 ## Quick start
 
 ```bash
